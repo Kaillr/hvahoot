@@ -1,49 +1,110 @@
 import { RequestHandler } from 'express';
 import { hash } from '@node-rs/argon2';
 import db from '../config/db.js';
-import { v4 as uuidv4 } from 'uuid';
+import { v4 as uuidv4, validate as validateuuid } from 'uuid';
+import paginate from '../helpers/paginate.js';
+import sendResponse from '../helpers/sendResponse.js';
 
-export const getAllUsers: RequestHandler = async (req, res) => {
+export const getAllUsers: RequestHandler = async (req, res, next) => {
     try {
-        const { rows } = await db.query('SELECT * FROM users');
-        res.status(200).json({ users: rows });
+        const { data, pagination, error } = await paginate({
+            req,
+            table: 'users',
+        });
+
+        if (error) {
+            sendResponse({
+                req,
+                res,
+                statusCode: 400,
+                error: error,
+            });
+            return;
+        }
+
+        sendResponse({
+            req,
+            res,
+            statusCode: 200,
+            message: 'Users fetched successfully.',
+            data: { users: data },
+            pagination: pagination,
+        });
     } catch (err) {
-        console.error('Error fetching users:', err);
-        res.status(500).json({ error: 'Internal server error.' });
+        next(err);
     }
 };
 
-export const getUserById: RequestHandler = async (req, res) => {
+export const getUserById: RequestHandler = async (req, res, next) => {
     const { id } = req.params;
 
-    if (!id) {
-        res.status(400).json({ error: 'Missing id in parameters' });
+    if (!validateuuid(id)) {
+        sendResponse({
+            req,
+            res,
+            statusCode: 400,
+            error: {
+                code: 'INVALID_PARAMETERS',
+                message: 'Invalid user id.',
+                details: 'User id must be a valid UUID.',
+            },
+        });
+        return;
     }
 
     try {
         const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [
             id,
         ]);
+
+        if (rows.length === 0) {
+            sendResponse({
+                req,
+                res,
+                statusCode: 404,
+                error: {
+                    code: 'NOT_FOUND',
+                    message: 'User not found.',
+                    details: 'User with the provided id does not exist.',
+                },
+            });
+            return;
+        }
         const user = rows[0];
-        res.status(200).json({ user: user });
+
+        sendResponse({
+            req,
+            res,
+            statusCode: 200,
+            message: 'User fetched successfully.',
+            data: { user: user },
+        });
     } catch (err) {
-        console.error('Error fetching user:', err);
-        res.status(500).json({ error: 'Internal server error.' });
+        next(err);
     }
 };
 
 export const createNewUser: RequestHandler = async (
     req,
     res,
+    next,
 ): Promise<void> => {
     const { email, username, password } = req.body;
 
     if (!email || !username || !password) {
-        res.status(400).json({ error: 'Missing email, username or password.' });
-        return;
+        return sendResponse({
+            req,
+            res,
+            statusCode: 400,
+            error: {
+                code: 'BAD_REQUEST',
+                message: 'Missing email, username, or password.',
+                details: 'Make sure all required fields are provided.',
+            },
+        });
     }
 
-    const uuid = uuidv4();
+    const id = uuidv4();
 
     try {
         const hashedPassword = await hash(password);
@@ -59,23 +120,49 @@ export const createNewUser: RequestHandler = async (
         );
 
         if (emailInUse) {
-            res.status(409).json({ error: 'Email is already in use.' });
+            sendResponse({
+                req,
+                res,
+                statusCode: 400,
+                error: {
+                    code: 'EMAIL_ALREADY_EXISTS',
+                    message: 'Email is already in use.',
+                },
+            });
             return;
         }
 
         if (usernameInUse) {
-            res.status(409).json({ error: 'Username is already in use.' });
+            sendResponse({
+                req,
+                res,
+                statusCode: 400,
+                error: {
+                    code: 'USERNAME_ALREADY_EXISTS',
+                    message: 'Username is already in use.',
+                },
+            });
             return;
         }
 
         await db.query(
             'INSERT INTO users (id, username, email, password) VALUES ($1, $2, $3, $4)',
-            [uuid, username, email, hashedPassword],
+            [id, username, email, hashedPassword],
         );
 
-        res.status(201).json({ message: 'User registered successfully.' });
+        const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [
+            id,
+        ]);
+        const user = rows[0];
+
+        sendResponse({
+            req,
+            res,
+            statusCode: 201,
+            message: 'User registered successfully.',
+            data: { user: user },
+        });
     } catch (err) {
-        console.error('Error creating user:', err);
-        res.status(500).json({ error: 'Internal server error.' });
+        next(err);
     }
 };
